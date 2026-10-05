@@ -4,7 +4,7 @@ An independent WooCommerce payment gateway that sends customers to WiPay's hoste
 
 ## Status
 
-Updated rebuild, version 1.0.4. This release adds the required accessibility label for WooCommerce Checkout Blocks and reads gateway presentation settings from WooCommerce's payment method data. Version 1.0.3 fixed block checkout discovery after staging revealed an escaped class-name check. Classic and block checkout flows still need end-to-end sandbox verification before live use.
+**Sandbox testing release:** Version 1.0.4 has completed classic checkout and WooCommerce Checkout Blocks sandbox payment testing on staging. Live WiPay processing has not been tested. Installers must keep the gateway in Sandbox; this release is not for accepting live payments.
 
 ## Safety design
 
@@ -20,17 +20,21 @@ Updated rebuild, version 1.0.4. This release adds the required accessibility lab
 
 1. Install WordPress and WooCommerce.
 2. Copy this folder into `wp-content/plugins/` and activate it.
-3. Open WooCommerce → Settings → Payments → Waypoint WiPay.
-4. Select Sandbox, choose the platform for the merchant account, and save. Sandbox uses WiPay's published `1234567890` test account and `123` response-verification key.
-5. Only after successful sandbox known-answer verification, set the live account number and define the live key in `wp-config.php`:
+3. Open WooCommerce → Settings → Payments → Waypoint WiPay, enable the gateway, and keep Environment set to **Sandbox**.
+4. Choose the platform for the merchant account and save. Sandbox uses WiPay's published `1234567890` test account and `123` response-verification key.
+5. Place sandbox orders to review the checkout flow, including a successful payment and a declined/failed payment. Do not switch this release to Live.
+
+Live setup is outside the scope of this sandbox testing release. A later release must be verified for live processing before merchants use live credentials or accept real payments. The live API key, when applicable, belongs only in server-side `wp-config.php`:
 
 ```php
 define( 'WAYPOINT_WIPAY_API_KEY', 'your-live-key' );
 ```
 
-Do not commit `wp-config.php` or disclose the live key. Enable the gateway only when the site's own tests and merchant configuration are complete.
+Never commit `wp-config.php` or disclose a live key.
 
 The endpoint host is selected from WiPay's documented country/environment map. This version supports TT, JM, BB, GY, and GD. It enforces the supplied TTD 5.00 minimum for the TT/TTD combination. It supports classic checkout and WooCommerce Checkout Blocks. Automated refunds are not supported.
+
+Email delivery is handled by the store's WordPress, WooCommerce, and hosting configuration. Merchants should test order and status emails separately; SMTP setup is not part of this payment gateway.
 
 ## API behavior
 
@@ -52,4 +56,5 @@ GPL-2.0-or-later. See [LICENSE](LICENSE). Waypoint accepts no liability for use 
 - [Payment Request](https://docs.wipayfinancial.com/payments-api/payment-request)
 - [Transaction Response and hash verification](https://docs.wipayfinancial.com/payments-api/transaction-response)
 - [Platforms and Environments](https://docs.wipayfinancial.com/platforms-and-environments)
+
 
