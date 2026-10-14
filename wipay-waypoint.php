@@ -3,7 +3,7 @@
  * Plugin Name: Waypoint WiPay for WooCommerce
  * Plugin URI: https://waypointt.com/
  * Description: Hosted card checkout for WooCommerce using WiPay's Payments API.
- * Version: 1.0.4
+ * Version: 1.1.0
  * Requires at least: 6.4
  * Requires PHP: 7.4
  * WC requires at least: 8.0
@@ -17,7 +17,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WAYPOINT_WIPAY_VERSION', '1.0.4' );
+define( 'WAYPOINT_WIPAY_VERSION', '1.1.0' );
+require_once __DIR__ . '/includes/class-waypoint-wipay-platforms.php';
+require_once __DIR__ . '/includes/class-waypoint-wipay-wapi.php';
+require_once __DIR__ . '/includes/class-waypoint-wipay-webhooks.php';
+require_once __DIR__ . '/includes/class-waypoint-wipay-reconciliation.php';
 define( 'WAYPOINT_WIPAY_ID', 'waypoint_wipay' );
 define( 'WAYPOINT_WIPAY_PLUGIN_FILE', __FILE__ );
 
@@ -46,7 +50,6 @@ add_action( 'plugins_loaded', static function () {
 	}
 
 	final class Waypoint_WiPay_Gateway extends WC_Payment_Gateway {
-		private const PLATFORMS = array( 'BB', 'GD', 'GY', 'JM', 'TT' );
 		private const SANDBOX_ACCOUNT = '1234567890';
 		private const SANDBOX_KEY = '123';
 		private const META_STARTED = '_waypoint_wipay_started';
@@ -61,7 +64,7 @@ add_action( 'plugins_loaded', static function () {
 			$this->method_title       = __( 'Waypoint WiPay', 'waypoint-wipay' );
 			$this->method_description = __( 'Redirect customers to WiPay hosted checkout. This independent plugin is not endorsed by WiPay.', 'waypoint-wipay' );
 			$this->has_fields         = false;
-			$this->supports           = array( 'products' );
+			$this->supports           = array( 'products', 'refunds' );
 			$this->init_form_fields();
 			$this->init_settings();
 
@@ -125,6 +128,15 @@ add_action( 'plugins_loaded', static function () {
 						'split'           => __( 'Split', 'waypoint-wipay' ),
 					),
 				),
+				'webhook_url' => array(
+					'title'       => __( 'Webhook endpoint', 'waypoint-wipay' ),
+					'type'        => 'title',
+					'description' => sprintf(
+						/* translators: %s: the store's webhook URL. */
+						__( 'Register this URL on the WiPay dashboard Developer page to receive signed payment, chargeback and refund events: %s', 'waypoint-wipay' ),
+						Waypoint_WiPay_Webhooks::endpoint_url()
+					),
+				),
 				'debug' => array(
 					'title'       => __( 'Diagnostics', 'waypoint-wipay' ),
 					'type'        => 'checkbox',
@@ -138,6 +150,7 @@ add_action( 'plugins_loaded', static function () {
 		public function admin_options() {
 			parent::admin_options();
 			echo '<p>' . esc_html__( 'Set the live API key as WAYPOINT_WIPAY_API_KEY in wp-config.php. It is never stored in plugin settings or sent to browser code. Sandbox uses WiPay’s published test account and key.', 'waypoint-wipay' ) . '</p>';
+			echo '<p>' . esc_html__( 'Refunds and reconciliation need a WAPI key: define WAYPOINT_WIPAY_WAPI_KEY in wp-config.php. Signed webhooks need WAYPOINT_WIPAY_WEBHOOK_SECRET. Both stay server-side and are never stored in these settings.', 'waypoint-wipay' ) . '</p>';
 			echo '<p>' . esc_html__( 'Waypoint maintains this independent plugin. WiPay does not sponsor, endorse, or accept responsibility for it. Use at your own risk; see LICENSE.', 'waypoint-wipay' ) . '</p>';
 		}
 
@@ -149,17 +162,9 @@ add_action( 'plugins_loaded', static function () {
 		}
 
 		private function endpoint( $country, $environment ) {
-			$hosts = array(
-				'TT' => array( 'live' => 'tt.wipayfinancial.com', 'sandbox' => 'ttsb.wipayfinancial.com' ),
-				'JM' => array( 'live' => 'jm.wipayfinancial.com', 'sandbox' => 'jmsb.wipayfinancial.com' ),
-				'BB' => array( 'live' => 'bb.wipayfinancial.com', 'sandbox' => 'bbsb.wipayfinancial.com' ),
-				'GY' => array( 'live' => 'gy.wipayfinancial.com', 'sandbox' => 'gysb.wipayfinancial.com' ),
-				'GD' => array( 'live' => 'gd.wipayfinancial.com', 'sandbox' => 'gdsb.wipayfinancial.com' ),
-			);
-			if ( ! in_array( $country, self::PLATFORMS, true ) || ! isset( $hosts[ $country ][ $environment ] ) ) {
-				return '';
-			}
-			return 'https://' . $hosts[ $country ][ $environment ] . '/plugins/payments/request';
+			$host = Waypoint_WiPay_Platforms::host( $country, $environment );
+
+			return '' === $host ? '' : 'https://' . $host . '/plugins/payments/request';
 		}
 
 		private function log_event( $message, array $context = array() ) {
@@ -256,6 +261,128 @@ add_action( 'plugins_loaded', static function () {
 			return array( 'result' => 'success', 'redirect' => $url );
 		}
 
+		/**
+		 * Completes an order from an already-authenticated result.
+		 *
+		 * Shares the guard used by the browser callback: an order that is no
+		 * longer payable, or whose stock is short, is flagged for manual
+		 * review instead of being completed automatically.
+		 *
+		 * @param WC_Order $order          Order.
+		 * @param string   $transaction_id WiPay transaction id.
+		 * @param string   $source         What reported the result.
+		 * @return bool Whether the order was completed.
+		 */
+		public function apply_verified_success( $order, $transaction_id, $source = 'notification' ) {
+			if ( $order->is_paid() ) {
+				return false;
+			}
+
+			if ( $this->flag_late_or_out_of_stock( $order ) ) {
+				return false;
+			}
+
+			$order->payment_complete( $transaction_id );
+
+			if ( function_exists( 'WC' ) && WC()->cart ) {
+				WC()->cart->empty_cart();
+			}
+
+			$this->log_event( 'payment_verified', array( 'order_id' => $order->get_id(), 'source' => $source ) );
+
+			return true;
+		}
+
+		/**
+		 * Marks a started, unpaid order as failed.
+		 *
+		 * Paid, cancelled and refunded orders are never moved backwards.
+		 *
+		 * @param WC_Order $order Order.
+		 * @param string   $note  Customer-visible reason.
+		 * @return bool Whether the status changed.
+		 */
+		public function apply_failed_result( $order, $note = '' ) {
+			if ( $order->is_paid() ) {
+				return false;
+			}
+
+			if ( ! in_array( $order->get_status(), array( 'pending', 'on-hold' ), true ) ) {
+				return false;
+			}
+
+			$order->update_status(
+				'failed',
+				'' !== $note ? $note : __( 'WiPay reported that this started payment attempt did not succeed.', 'waypoint-wipay' )
+			);
+
+			return true;
+		}
+
+		/**
+		 * Handles a WooCommerce refund request.
+		 *
+		 * WiPay's refund operation is an authenticated WAPI call that creates
+		 * a *refund request*. It documents no amount parameter, so only a full
+		 * order refund is accepted here, and it does not confirm that funds
+		 * have returned - that arrives later as a payment.refunded or
+		 * payment.refund_rejected webhook event.
+		 *
+		 * @param int         $order_id Order id.
+		 * @param float|null  $amount   Requested amount, or null for the full total.
+		 * @param string      $reason   Merchant reason.
+		 * @return true|\WP_Error
+		 */
+		public function process_refund( $order_id, $amount = null, $reason = '' ) {
+			$order = wc_get_order( $order_id );
+
+			if ( ! $order ) {
+				return new \WP_Error( 'waypoint_wipay_no_order', __( 'Order not found.', 'waypoint-wipay' ) );
+			}
+
+			$transaction_id = (string) $order->get_meta( self::META_TRANSACTION );
+
+			if ( '' === $transaction_id ) {
+				return new \WP_Error( 'waypoint_wipay_no_transaction', __( 'This order has no WiPay transaction to refund.', 'waypoint-wipay' ) );
+			}
+
+			$total = (float) $order->get_total( 'edit' );
+
+			if ( null !== $amount && abs( (float) $amount - $total ) > 0.01 ) {
+				return new \WP_Error(
+					'waypoint_wipay_partial_refund',
+					__( 'WiPay supports full order refunds only. Refund the whole order here, or record a partial adjustment outside WooCommerce.', 'waypoint-wipay' )
+				);
+			}
+
+			if ( ! Waypoint_WiPay_WAPI::is_configured() ) {
+				return new \WP_Error(
+					'waypoint_wipay_no_wapi_key',
+					__( 'Set WAYPOINT_WIPAY_WAPI_KEY in wp-config.php to refund from WooCommerce.', 'waypoint-wipay' )
+				);
+			}
+
+			$environment = (string) $order->get_meta( self::META_ENVIRONMENT );
+
+			if ( ! in_array( $environment, array( 'sandbox', 'live' ), true ) ) {
+				$environment = $this->get_option( 'environment', 'sandbox' );
+			}
+
+			$country = strtoupper( $this->get_option( 'country_code', 'TT' ) );
+
+			$result = Waypoint_WiPay_WAPI::refund( $transaction_id, $country, $environment );
+
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			$order->add_order_note(
+				__( 'WiPay refund request submitted and awaiting confirmation. Confirm the outcome in your WiPay account before treating funds as returned.', 'waypoint-wipay' )
+			);
+			$this->log_event( 'refund_requested', array( 'order_id' => $order->get_id() ) );
+
+			return true;
+		}
 		private function add_customer_prefill( array &$payload, WC_Order $order ) {
 			$optional = array(
 				'fname'   => array( $order->get_billing_first_name(), 30 ),
@@ -283,7 +410,7 @@ add_action( 'plugins_loaded', static function () {
 			}
 		}
 
-		private function flag_late_or_out_of_stock( WC_Order $order ) {
+		public function flag_late_or_out_of_stock( WC_Order $order ) {
 			if ( in_array( $order->get_status(), array( 'cancelled', 'failed', 'refunded' ), true ) ) {
 				if ( $order->get_meta( self::META_LATE_PAYMENT ) === 'order_not_payable' ) {
 					return true;

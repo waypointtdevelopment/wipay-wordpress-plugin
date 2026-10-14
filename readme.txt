@@ -4,19 +4,19 @@ Tags: woocommerce, payment-gateway, wipay, hosted-checkout
 Requires at least: 6.4
 Tested up to: 7.1.2
 Requires PHP: 7.4
-Stable tag: 1.0.4
+Stable tag: 1.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 Independent WooCommerce gateway that redirects customers to WiPay's hosted card checkout.
 
-This is a Sandbox testing release. Classic checkout and WooCommerce Checkout Blocks have been exercised on Waypoint's staging store. Live WiPay processing has not been tested; do not use this release to accept live payments.
+This is a Sandbox testing release. Classic checkout and WooCommerce Checkout Blocks have been exercised on Waypoint's staging store. The webhook, refund and reconciliation features added in 1.1.0 have not yet been exercised against WiPay sandbox. Live WiPay processing has not been tested; do not use this release to accept live payments.
 
 == Description ==
 
 This independent plugin is maintained by Waypoint and is not affiliated with, sponsored by, or endorsed by WiPay. Card details are entered on WiPay's hosted checkout page; this plugin does not collect card numbers or CVV values.
 
-Payments are only completed after the server verifies WiPay's response hash using the exact order total pinned when checkout starts. Refund processing is not supported in this release. This software is provided under the GPL-2.0-or-later license without warranty; see LICENSE.
+Payments are only completed after the server verifies WiPay's response hash using the exact order total pinned when checkout starts. Signed webhooks, full-order refunds and on-demand transaction reconciliation are available once their server-side constants are configured. This software is provided under the GPL-2.0-or-later license without warranty; see LICENSE.
 
 == Installation ==
 
@@ -41,9 +41,17 @@ This version offers BB, GD, GY, JM, and TT, matching WiPay's current published P
 - Live API key: server-side `WAYPOINT_WIPAY_API_KEY` constant in `wp-config.php`; the key is not stored in plugin settings or printed into JavaScript.
 - Diagnostics: optional, off by default. Logs contain event names, order IDs, and HTTP status codes only; customer data, request/response bodies, hashes, and keys are not logged.
 
-The plugin supports classic WooCommerce checkout and WooCommerce Checkout Blocks, and declares HPOS compatibility. Classic and Blocks sandbox payments have been exercised on Waypoint's staging store; each merchant should complete its own sandbox checkout review. Refunds must be handled through the merchant's WiPay account and recorded in WooCommerce manually. Live WiPay processing has not been tested.
+The plugin supports classic WooCommerce checkout and WooCommerce Checkout Blocks, and declares HPOS compatibility. Classic and Blocks sandbox payments have been exercised on Waypoint's staging store; each merchant should complete its own sandbox checkout review. Webhooks, refunds and reconciliation are new in 1.1.0 and have not been exercised against WiPay sandbox; work through TESTING.md before relying on them. Live WiPay processing has not been tested.
 
 Email delivery is handled by the store's WordPress, WooCommerce, and hosting configuration. Merchants should test WooCommerce order and status emails separately; SMTP setup is not part of this payment gateway.
+
+== Webhooks, refunds and reconciliation ==
+
+Signed webhooks: register the endpoint shown on the gateway settings screen on the WiPay dashboard Developer page, and define WAYPOINT_WIPAY_WEBHOOK_SECRET in wp-config.php. Events are authenticated with HMAC-SHA256 over the raw request body, rejected outside a five minute timestamp window, and de-duplicated by event id. A webhook can never complete an order whose recorded transaction id does not match the event.
+
+Refunds: define WAYPOINT_WIPAY_WAPI_KEY in wp-config.php to refund from the WooCommerce order screen. WiPay documents a refund request with no amount parameter, so only full order refunds are accepted and partial refunds are refused. A refund request does not confirm that funds have returned - watch for the payment.refunded or payment.refund_rejected webhook event.
+
+Reconciliation: run the Reconcile with WiPay order action to fetch the transaction's current state and record the comparison as an order note. It reports discrepancies and never completes or refunds an order on its own.
 
 == Disclaimer ==
 
@@ -52,6 +60,12 @@ This software is provided "as is", without warranty of any kind. Waypoint accept
 WiPay is a trademark of its respective owner. Mention of WiPay identifies the payment service this independent plugin connects to and does not imply endorsement.
 
 == Changelog ==
+
+= 1.1.0 =
+* Add signed webhook handling for payment, chargeback, refund and fraud events, with HMAC-SHA256 verification, a five minute timestamp window and event id deduplication.
+* Add full order refunds through WiPay's WAPI refund request; partial refunds are refused because WiPay documents no amount parameter.
+* Add a Reconcile with WiPay order action that records the transaction's current state as an order note.
+* Move the platform and host map into a shared Waypoint_WiPay_Platforms class.
 
 = 1.0.4 =
 * Add the required accessibility label for WooCommerce Checkout Blocks.
