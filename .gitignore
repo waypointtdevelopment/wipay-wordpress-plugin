@@ -3,3 +3,4 @@
 *.log
 vendor/
 .DS_Store
+wp-config.php

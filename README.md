@@ -66,7 +66,7 @@ The plugin uses `POST https://{country-host}/plugins/payments/request` with an `
 
 WAPI calls reuse the same country host with `/wapi/...` paths and authenticate with an `X-WAPI-Key` header.
 
-The endpoint host map lives in [`includes/class-waypoint-wipay-platforms.php`](includes/class-waypoint-wipay-platforms.php) and is shared by payment requests and WAPI calls. The TT pair is published on WiPay's Platforms and Environments page; **re-confirm the JM, BB, GY and GD hostnames before release.**
+The endpoint host map lives in [`includes/class-waypoint-wipay-platforms.php`](includes/class-waypoint-wipay-platforms.php) and is shared by payment requests and WAPI calls. All five live/sandbox host pairs are confirmed against WiPay's Platforms and Environments page (checked 15 October 2026), and all ten hostnames were verified reachable over HTTPS. This is no longer an open pre-release item.
 
 Email delivery is handled by the store's WordPress, WooCommerce, and hosting configuration. Merchants should test order and status emails separately; SMTP setup is not part of this payment gateway.
 

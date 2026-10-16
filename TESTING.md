@@ -1,6 +1,6 @@
 # Staging test plan — Waypoint WiPay for WooCommerce 1.1.0
 
-Sections 1–4 cover the checkout flow that already passed sandbox testing in 1.0.4 and must not regress. **Sections 5–8 cover the new 1.1.0 features, which have not yet been exercised against WiPay sandbox.** Run the whole list before treating this release as usable.
+Start at section 0: it probes whether sandbox supports WAPI and webhooks at all, which sections 2, 4, 5 and 6 all depend on. Sections 1–4 then cover the checkout flow that already passed sandbox testing in 1.0.4 and must not regress. **Sections 5–8 cover the new 1.1.0 features, which have not yet been exercised against WiPay sandbox.** Run the whole list before treating this release as usable.
 
 **Store setup:** WordPress 6.4+, WooCommerce, HTTPS enabled, one physical product with stock, and the gateway set to **Sandbox**.
 
@@ -8,15 +8,41 @@ Sections 1–4 cover the checkout flow that already passed sandbox testing in 1.
 php tests/run-tests.php   # must print RESULT: PASSED first
 ```
 
+## 0. Sandbox capability gate — run this before anything else
+
+Sections 5 and 6 depend on WiPay's WAPI, and sections 2 and 4 depend on sandbox webhook delivery. Neither has been confirmed. **Probe both before recording any result in this document.**
+
+Two facts checked on 15 October 2026:
+
+- The WAPI routes are live on the sandbox host. `GET https://ttsb.wipayfinancial.com/wapi/transactions/<id>` with no key returns `401 {"message":"Unauthorized"}`, not `404`. The router exists; only the key is missing.
+- WiPay's [Testing](https://docs.wipayfinancial.com/payments-api/testing) page states that in sandbox **"All reporting features are disabled for sandbox transactions"** and **"Transaction History information will not be available."**
+
+The second point is the risk. §5.4–5.8 and all of §6 assume WAPI can retrieve a transaction. If sandbox returns no data for a real sandbox transaction, those rows cannot pass and this plan must be rewritten rather than executed.
+
+| # | Probe | Passing result |
+|---|---|---|
+| 0.1 | `curl -H "X-WAPI-Key: <sandbox key>" https://ttsb.wipayfinancial.com/wapi/transactions/<a real sandbox transaction id>` | Returns transaction JSON, not an empty or "not found" payload |
+| 0.2 | Complete one sandbox order, then check the WiPay dashboard Developer page for a delivered test event | The event arrives and the endpoint answers `200` |
+| 0.3 | Register the webhook endpoint from the gateway settings screen and fire a test event | The store receives it; if not, sandbox does not emit webhooks and §2.5 / §4 are blocked |
+
+Stop and escalate if 0.1 or 0.3 fails. Every later section assumes both work.
+
 ## 1. Regression — checkout still works
+
+**Test cards are currency-specific and the sets are not interchangeable.** WiPay publishes a TTD card set and a separate USD/other-currencies set, and states that "a card valid for one sandbox checkout may be rejected by another." Confirm the store currency before running this section and use only its set.
+
+| Store currency | Success card | Declined / failed card |
+|---|---|---|
+| USD or any non-TTD currency | `4242424242424242` (S01TP) | `4000000000000002` (S02TP, `card_declined`) |
+| TTD | `4000000000002719` (C01YZ, frictionless, Status=A) | WiPay publishes **no plain decline card for TTD** — use `4000000000002644` (C04YZ, Status=U, authentication error) or switch the store to USD for this row |
 
 | # | Step | Expected |
 |---|---|---|
 | 1.1 | Activate the upgraded plugin | No PHP errors or fatals in `debug.log` |
 | 1.2 | Gateway settings screen opens | All previous fields present, plus a **Webhook endpoint** URL |
-| 1.3 | Classic checkout, pay with `4242424242424242` | Order completes; confirmation page renders |
-| 1.4 | Checkout Blocks, same card | Order completes |
-| 1.5 | Declined card `4000000000000002` | Order fails, never marked paid |
+| 1.3 | Classic checkout, pay with the **success card for the store currency** (USD `4242424242424242`, TTD `4000000000002719`) | Order completes; confirmation page renders |
+| 1.4 | Checkout Blocks, same card as 1.3 | Order completes |
+| 1.5 | The **decline card for the store currency** from the table above | Order fails, never marked paid |
 | 1.6 | Replay a captured success return URL | Order is not completed a second time |
 | 1.7 | TTD 5.00 minimum still enforced on TT/TTD | Blocked below, allowed above |
 | 1.8 | Diagnostics off by default | No log lines written |
